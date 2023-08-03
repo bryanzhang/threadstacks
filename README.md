@@ -1,6 +1,80 @@
 原项目地址: https://github.com/thoughtspot/threadstacks/
-可通过./install.sh一键完成构建、测试与安装, 在bazel 5.4.1下验证通过。
 
+以下在ubuntu 22.04 LTS + bazel 5.4.1下验证通过。
+
+# Step1: 环境准备
+```
+apt update && apt install -y bazel=5.4.1 && apt install -y libgoogle-glog-dev && apt install -y libunwind-dev
+```
+
+# Step2: 编译安装
+```
+INSTALL_DIR=/usr ./install.sh #脚本安装了threadstacks和tssysutil
+```
+
+# Step3: 验证
+
+编辑test.cc:
+```
+#include <iostream>
+#include <thread>
+#include <chrono>
+#include <thread>
+#include <threadstacks/signal_handler.h>
+
+void threadFunction(int id) {
+    std::cout << "Thread " << id << " started" << std::endl;
+    for (; ;) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      std::cout << "Thread " << id << " working..." << std::endl;
+    }
+    // Do some work...
+    std::cout << "Thread " << id << " finished" << std::endl;
+}
+
+int main() {
+  thoughtspot::StackTraceSignal::InstallInternalHandler();
+  thoughtspot::StackTraceSignal::InstallExternalHandler();
+
+  const int numThreads = 50;
+  std::thread threads[numThreads];
+
+  // Start the threads
+  for (int i = 0; i < numThreads; i++) {
+    threads[i] = std::thread(threadFunction, i);
+  }
+
+  // Wait for the threads to finish
+  for (int i = 0; i < numThreads; i++) {
+    threads[i].join();
+  }
+
+  std::cout << "All threads finished" << std::endl;
+
+  return 0;
+}
+```
+编译：
+```
+g++ test.cc  -lthreadstacks -lglog -lpthread -ltssysutil
+```
+运行：
+```
+./a.out 2>/tmp/stderr
+```
+发送信号：
+```
+kill -35 ${pid} # a.out的进程ID
+```
+然后在/tmp/stderr中就可以看到类似jstack的输出了。
+
+# TODO:
+
+1.对glog的依赖，对thoughtspot内部的公共库sysutil有依赖，这么轻量的库可以做成无依赖；
+
+2.bazel test是跑不过测试的，需要fix一下。
+
+===============分割线，以下为原项目文档
 Author: Nipun Sehrawat (nipun.sehrawat.ns@gmail.com, nipun@thoughtspot.com)
 
 # Threadstacks
