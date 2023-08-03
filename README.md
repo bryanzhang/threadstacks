@@ -1,3 +1,6 @@
+原项目地址: https://github.com/thoughtspot/threadstacks/
+可通过./install.sh一键完成构建、测试与安装, 在bazel 5.4.1下验证通过。
+
 Author: Nipun Sehrawat (nipun.sehrawat.ns@gmail.com, nipun@thoughtspot.com)
 
 # Threadstacks

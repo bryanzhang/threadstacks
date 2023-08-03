@@ -10,8 +10,6 @@
 #include <string>
 #include <vector>
 
-#include "common/types.h"
-
 namespace thoughtspot {
 
 // A StackTraceCollector can be used for collecting stack traces of all threads

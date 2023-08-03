@@ -1,0 +1,4 @@
+bazel-*
+tags
+*.swo
+*.swp
