@@ -12,6 +12,7 @@
 #include <sys/timerfd.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <backtrace.h>
 
 #include <algorithm>
 #include <cstring>
@@ -21,12 +22,26 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
 
+#include <boost/algorithm/string.hpp>
+
 #include "common/defer.h"
 #include "common/sysutil.h"
+
+using std::vector;
+using std::string;
+using std::lower_bound;
+using std::pair;
+using std::make_pair;
+using std::istringstream;
+using std::ostringstream;
+using std::cerr;
+using std::ifstream;
+using std::map;
 
 namespace google {
 // Symbolize() is provided by the glog library but it's not exposed as a
@@ -48,7 +63,9 @@ struct ThreadStack {
   int64_t address[kMaxDepth];
   // Actual depth of the stack trace.
   int depth = 0;
+  int contextDepth = 0;
 };
+
 
 // A form sent by StackTraceCollector to threads to fill in their stack trace
 // and submit the results. Note that methods of this class invoked by signal
@@ -126,7 +143,7 @@ void InternalHandler(int signum, siginfo_t* siginfo, void* ucontext) {
     ErrLog("Ignoring signal sent from an outsider pid...\n");
     return;
   }
-  auto form = reinterpret_cast<StackTraceForm*>(siginfo->si_value.sival_ptr);
+  StackTraceForm* form = reinterpret_cast<StackTraceForm*>(siginfo->si_value.sival_ptr);
   if (nullptr == form) {
     ErrLog("Couldn't retrieve StackTraceForm pointer, ignoring signal...\n");
     return;
@@ -159,6 +176,7 @@ void InternalHandler(int signum, siginfo_t* siginfo, void* ucontext) {
       ErrLog("Failed to get instruction pointer...\n");
     }
   }
+
   if (not form->Submit()) {
     ErrLog("Failed to submit stacktrace form...\n");
   }
@@ -228,6 +246,7 @@ void RequestProcessor(std::promise<int>* p) {
   std::cout << "Started external stacktrace collection signal processor thread"
             << std::endl;
   int pipe_fd[2];
+
   // Open the pipe with O_CLOEXEC so that it is not visible to an exec'ed
   // child process.
   if (0 != pipe2(pipe_fd, O_CLOEXEC)) {
@@ -318,6 +337,93 @@ int SignalThread(pid_t pid, pid_t tid, uid_t uid, int signum, sigval payload) {
 }
 
 }  // namespace
+
+struct ModuleAddressSpace {
+  string modulePath;
+  int64_t start;
+  int64_t end;
+
+  bool operator < (const ModuleAddressSpace& that) const {
+    return start < that.start || (start == that.start && end < that.end);
+  }
+};
+
+static void readAllModuleAddressSpaces(vector<ModuleAddressSpace>& vec) {
+  std::ostringstream oss;
+  oss << "/proc/" << getpid() << "/maps";
+  string maps_path = oss.str();
+  ifstream ifs(maps_path);
+  if (!ifs) {
+    cerr << "Failed to open " << maps_path << std::endl;
+    return;
+  }
+
+  string line;
+  map<string, ModuleAddressSpace> map;
+  while (std::getline(ifs, line)) {
+    vector<string> tokens;
+    boost::split(tokens, line, boost::is_any_of(" "), boost::token_compress_on);
+    if (tokens.size() < 6) {
+      continue;
+    }
+    string modulePath = tokens[5];
+    istringstream addrSpaceIss(tokens[0]);
+    int64_t startAddr, endAddr;
+    addrSpaceIss >> std::hex >> startAddr;
+    addrSpaceIss.ignore(std::numeric_limits<std::streamsize>::max(), '-');
+    addrSpaceIss >> std::hex >> endAddr;
+    auto itr = map.find(modulePath);
+    if (modulePath == "" || modulePath == "[heap]") {
+      continue;
+    }
+    if (itr == map.end()) {
+      map[modulePath] = { modulePath, startAddr, endAddr };
+    } else {
+      itr->second.start = std::min(itr->second.start, startAddr);
+      itr->second.end = std::max(itr->second.end, endAddr);
+    }
+  }
+  vec.reserve(map.size());
+  for (auto itr = map.begin(); itr != map.end(); ++itr) {
+    vec.emplace_back(itr->second);
+  }
+  std::sort(vec.begin(), vec.end());
+}
+
+static pair<string, int> AddressToLine(string modulePath, int64_t offset) {
+  auto ret = make_pair<string, int>("", 0);
+  std::ostringstream oss;
+  oss << "addr2line -e " << modulePath << " 0x" << std::hex << offset;
+  FILE* fp = popen(oss.str().c_str(), "r");
+  if (fp == nullptr) {
+    return ret;
+  }
+  std::string result;
+  char buf[1024];
+  while (fgets(buf, sizeof(buf), fp)) {
+    result += buf;
+  }
+  pclose(fp);
+  std::size_t pos = result.find(":");
+  if (pos != std::string::npos) {
+    ret.first = result.substr(0, pos);
+    std::size_t spacePos = result.find(" ", pos + 1);
+    string numStr;
+    if (spacePos == std::string::npos) {
+      numStr = result.substr(pos + 1);
+    } else {
+      numStr = result.substr(pos + 1, spacePos - pos - 1);
+    }
+    char* endptr = nullptr;
+    errno = 0; 
+    ret.second = static_cast<int>(strtol(numStr.c_str(), &endptr, 10));
+    if (errno != 0 || endptr == numStr.c_str()) {
+      // cerr << "Conversion Error:" << numStr << std::endl;
+      ret.second = 0;
+    }
+  }
+  return ret;
+}
 
 auto StackTraceCollector::Collect(std::string* error) -> std::vector<Result> {
   auto tids_v = common::Sysutil::ListThreads();
@@ -451,8 +557,10 @@ auto StackTraceCollector::Collect(std::string* error) -> std::vector<Result> {
     }
   }
 
-  std::vector<Result> results;
+  vector<Result> results;
   results.reserve(unique_traces.size());
+  vector<ModuleAddressSpace> moduleAddressSpaces;
+  readAllModuleAddressSpaces(moduleAddressSpaces);
   for (const auto& e : unique_traces) {
     const auto& stack = e.first->stack();
     Result r;
@@ -461,18 +569,42 @@ auto StackTraceCollector::Collect(std::string* error) -> std::vector<Result> {
     for (int i = 0; i < stack.depth; ++i) {
       std::ostringstream ss;
       char buffer[1024];
+      Trace trace;
       if (not google::Symbolize(reinterpret_cast<void*>(stack.address[i]),
                                 buffer,
                                 sizeof buffer)) {
-        r.trace.emplace_back(stack.address[i], kUnknown);
+	trace.symbol = kUnknown;
       } else {
-        r.trace.emplace_back(stack.address[i], buffer);
+	trace.symbol = buffer;
       }
+      // step 1: 这里地址是经过ASLR(Address space layout randomization)处理后的地址，需要拿到其在ELF文件中的相对偏移位置、ELF文件的绝对路径
+      ModuleAddressSpace target = { "", stack.address[i], stack.address[i] };
+      auto itr = std::upper_bound(moduleAddressSpaces.begin(), moduleAddressSpaces.end(), target);
+      if (itr == moduleAddressSpaces.begin()) {
+	trace.modulePath = kUnknown;
+        trace.sourcePath = kUnknown;
+        trace.lineNumber = 0;
+	trace.offset = 0;
+      } else {
+	--itr;
+	if (itr->end <= stack.address[i]) {
+	  trace.modulePath = kUnknown;
+	  trace.sourcePath = kUnknown;
+	  trace.lineNumber = 0;
+	  trace.offset = 0;
+	}
+	trace.offset = stack.address[i] - itr->start;
+	trace.modulePath = itr->modulePath;
+        // step 2: 拿偏移位置和ELF文件路径调用addr2line获取源文件和代码行号
+	std::tie(trace.sourcePath, trace.lineNumber) = AddressToLine(itr->modulePath, trace.offset);
+      }
+      r.traces.emplace_back(std::make_pair(stack.address[i], trace));
     }
     results.push_back(r);
   }
   return results;
 }
+
 
 // static
 std::string StackTraceCollector::ToPrettyString(const std::vector<Result>& r) {
@@ -488,10 +620,12 @@ std::string StackTraceCollector::ToPrettyString(const std::vector<Result>& r) {
     }
     ss << *e.tids.rbegin() << std::endl;
     ss << "Stack trace:" << std::endl;
-    for (const auto& elem : e.trace) {
+    for (const auto& elem : e.traces) {
       std::ostringstream addr;
       addr << "0x" << std::hex << elem.first;
-      ss << std::setw(16) << addr.str() << " : " << elem.second << std::endl;
+      std::ostringstream offset;
+      offset << "0x" << std::hex << elem.second.offset;
+      ss << std::setw(16) << addr.str() << "(+" << offset.str() << ")" << " : " << elem.second.symbol << "(" << elem.second.sourcePath << ":" << elem.second.lineNumber << ")(" << elem.second.modulePath << ")" << std::endl;
     }
     ss << std::endl;
   }

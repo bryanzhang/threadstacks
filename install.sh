@@ -16,10 +16,10 @@ function cleanup {
 trap cleanup EXIT
 
 echo "Building..."
-bazel build //threadstacks/...
-bazel build //common/...
+bazel build //threadstacks/... -c dbg
+bazel build //common/... -c dbg
 echo "Testing..."
-#bazel test //...
+#bazel test //... -c dbg
 
 # Set the installation directory
 INSTALL_DIR=${INSTALL_DIR:-/usr/local}

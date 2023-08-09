@@ -644,9 +644,9 @@ MATCHER_P3(HasSubStack, tid, function_name, count, "") {
 
   bool match_started = false;
   int found = 0;
-  for (int i = 0; i < it->trace.size(); ++i) {
-    const auto& elem = it->trace[i].second;
-    if (elem.find(function_name) != std::string::npos) {
+  for (int i = 0; i < it->traces.size(); ++i) {
+    const auto& elem = it->traces[i].second;
+    if (elem.symbol.find(function_name) != std::string::npos) {
       match_started = true;
       if (count == ++found) {
         return true;

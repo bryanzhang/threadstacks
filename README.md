@@ -1,10 +1,31 @@
-原项目地址: https://github.com/thoughtspot/threadstacks/
+安全、类似于jstack一样便捷输出各个线程callstack trace的库，支持kill -35从标准错误中捕捉输出, 信号处理过程确保系统调用可重入。
+
+fork自：https://github.com/thoughtspot/threadstacks/
+
+
+
+两个改动：
+
+1.支持打印相关so模块路径、源码文件名、代码行号;
+
+2.支持头文件、.so、.a安装到系统中。
+
+
+
+TODO:
+
+1.尽量能去除对glog的依赖，对sysutil库依赖，做到足够轻量；
+
+2.bazel test跑不过测试的；
+
+3.类似于configure && make && make install标准流程。
+
 
 以下在ubuntu 22.04 LTS + bazel 5.4.1下验证通过。
 
 # Step1: 环境准备
 ```
-apt update && apt install -y bazel=5.4.1 && apt install -y libgoogle-glog-dev && apt install -y libunwind-dev
+apt update && apt install -y bazel=5.4.1 && apt install -y libgoogle-glog-dev && apt install -y libunwind-dev && apt install -y binutils
 ```
 
 # Step2: 编译安装
@@ -68,11 +89,6 @@ kill -35 ${pid} # a.out的进程ID
 ```
 然后在/tmp/stderr中就可以看到类似jstack的输出了。
 
-# TODO:
-
-1.对glog的依赖，对thoughtspot内部的公共库sysutil有依赖，这么轻量的库可以做成无依赖；
-
-2.bazel test是跑不过测试的，需要fix一下。
 
 ===============分割线，以下为原项目文档
 Author: Nipun Sehrawat (nipun.sehrawat.ns@gmail.com, nipun@thoughtspot.com)

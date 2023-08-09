@@ -7,7 +7,7 @@ cc_library(
             "//common:sysutil",
             "//common:types",
             "//external:glog", ],
-    linkopts = ["-lunwind"],
+    linkopts = ["-lunwind", "-L/usr/local/lib/", "-lbacktrace"],
     visibility = ["//visibility:public"],
 )
 

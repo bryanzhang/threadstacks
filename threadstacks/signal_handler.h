@@ -6,9 +6,9 @@
 
 #include <signal.h>
 #include <sys/types.h>
-
 #include <string>
 #include <vector>
+#include <backtrace.h>
 
 namespace thoughtspot {
 
@@ -16,11 +16,19 @@ namespace thoughtspot {
 // running in the current process.
 class StackTraceCollector {
  public:
+  struct Trace {
+    std::string symbol;
+    std::string modulePath;
+    std::string sourcePath;
+    int64_t offset;
+    int lineNumber;
+  };
+
   // Result of the stack trace collection process.
   struct Result {
     // Stacktrace as a collection of (address, symbol) pairs. The first element
     // in the vector is the top of the stacktrace.
-    std::vector<std::pair<int64_t, std::string>> trace;
+    std::vector<std::pair<int64_t, Trace>> traces;
     // List of tids that share the above stack trace.
     std::vector<pid_t> tids;
   };
@@ -28,7 +36,8 @@ class StackTraceCollector {
   // Returns a pretty string containing all the stack traces in @result.
   static std::string ToPrettyString(const std::vector<Result>& result);
 
-  StackTraceCollector() = default;
+  StackTraceCollector() = default; 
+
   ~StackTraceCollector() = default;
 
   // Returns stack traces of all threads in the system. Returns an empty vector
